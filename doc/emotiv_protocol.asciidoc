@@ -1,0 +1,260 @@
+= Emotiv EEG Protocol Documentation
+
+By Daeken, Eguru, qDot
+Version 1.0, 2012-05-26
+
+== Introduction
+
+This document gives an overview of the communications and obfuscation
+mechanisms for the Emotiv EEG Headset. It covers the raw data
+transmission protocols, as well as the techniques used to lock down
+the system. 
+
+This document does not cover the inner working of any of the Emotiv
+SDK or Suites used on top of the raw data. It exists mainly for those
+interested in doing research with raw wave processing software such as
+OpenVibe and BrainBay.
+
+== Communications Mechanisms
+
+The Emotiv EEG communicates via a proprietary wireless protocol to a
+USB dongle hooked to the host computer. The USB dongle identifies as a
+USB HID device, emitting 32-byte reports at a rate of 128hz when the
+headset is on and in range. No data is ever written to the dongle or
+head, only read from them.
+
+Each report contains the following information:
+
+* Packet Counter
+* Battery Level
+* Contact Quality
+* Contact Sensor Readings
+* Gyro Sensor Readings
+
+== Cryptography
+
+=== Information and History
+
+To ensure that raw data is only read by those that have paid for the
+raw data license, each USB dongle encrypts incoming wireless data via
+AES against a key composed of the Serial Number (relayed in the USB
+feature report descriptor for the HID endpoint) of the dongle before
+emitting it as an HID report. It is assumed that data coming to the
+dongle from the wireless protocol is unencrypted, and all encryption
+happens on the dongle.
+
+While one would figure that dongles would have unique serials, this
+was not necessarily the case for the first year or so of emotiv
+development, and cracked decryption keys could be passed around as
+long as serials for USB dongles matched. However, later headsets now
+have unique serials per USB dongle.
+
+Initial key extraction techniques can be found at "Announcement.md"
+documentation in the emokit repository.
+
+=== Key Strategy
+
+To create a 128-bit key to decrypt incoming data from the usb dongle,
+we first need to request a feature report from the device that
+contains whether the device is a consumer or research headset. This
+fact changes the makeup of the key.
+
+Serial numbers are fetched via the feature report for the HID
+endpoint. Serial numbers are 16 byte strings of the format:
+
+-------
+SNXXXXXXXXXXYYYY
+-------
+
+Where Xs and Ys are usually numbers. The last 4 characters of the
+serial number are what are used to create the key. It's interesting to
+note that sometimes serials have dates embedded in them, i.e.
+
+-------
+SN20120526998912
+-------
+
+The date is probably the day the usb dongle was flashed. 
+
+For the research headset, the key is composed of the following values:
+
+-------
+[15] 0x00 [14] 0x54 [13] 0x10 [12] 0x42 [15] 0x00 [14] 0x48 [13] 0x00 [12] 0x50
+-------
+
+For the consumer headset, the key is composed of the following values:
+
+-------
+[15] 0x00 [14] 0x48 [13] 0x00 [12] 0x54 [15] 0x10 [14] 0x42 [13] 0x00 [12] 0x50
+-------
+
+Where the numbers in brackets are indexes of the serial string
+retrieved from the USB feature report descriptor. So for instance, if
+a serial number for a consumer headset is
+
+-------
+SN20120526998912
+-------
+
+The characters we're interested in are the last 4:
+
+-------
+8 [0x38] 9 [0x39] 1 [0x31] 2 [0x32]
+-------
+
+Then the resulting crypto key will be 
+
+-------
+0x32 0x00 0x31 0x48 0x39 0x00 0x38 0x54 0x32 0x10 0x31 0x42 0x39 0x00 0x38 0x50
+-------
+
+== Packet Analysis
+
+32-byte packets are received from the USB device at 128hz. Update
+rates within that packet are:
+
+* Sensor Data - 128hz
+* Gyro Data - 128hz
+* Battery - 1hz
+* Sensor Quality - 1hz-16hz (Depending on sensor)
+
+=== Packet Layout
+
+An Overview of the 256-bit Packet Layout:
+
+|=============================
+| Bit Indexes | Used for
+| 0:7   | Counter/Battery
+| 8:21  | F3 Data
+| 22:35 | FC5 Data
+| 36:49 | AF7 Data
+| 50:63 | F7 Data
+| 64:77 | T7 Data
+| 78:91 | P7 Data
+| 92:105 | O1 Data
+| 107:120 | Connection Quality (Rotating)
+| 121:133 | TP7 Data
+| 134:147 | O2 Data
+| 148:161 | P8 Data
+| 162:175 | T8 Data
+| 176:189 | F8 Data
+| 190:203 | AF8 Data
+| 204:217 | FC6 Data
+| 218:231 | F4 Data
+| 233:239 | Gyro X
+| 240:247 | Gyro Y
+| 248:255 | TP8 Data
+|=============================
+
+=== Counter and Battery
+
+The first byte of each packet can denote one of two things: the packet
+count, or the battery power level.
+
+Packet count makes up the lower 7 bits of the first byte. If the
+highest bit is a 1, then the battery level is being relayed. This
+happens once per second.
+
+Packet count goes from 0-127, then transmits a battery power packet,
+then wraps back to 0. This can be used to detect dropped packets. The
+battery power packet will always have the highest bit set to 1.
+
+Battery count is read via this table:
+
+|============================
+| Value		| Battery Level (%)
+| >= 248  | ~100
+|    247  | 99.93
+|    246  | 97.02
+|    245  | 93.40
+|    244  | 89.45
+|    243  | 85.23
+|    242  | 81.89
+|    241  | 76.77
+|    240  | 71.54
+|    239  | 66.59
+|    238  | 61.92
+|    237  | 55.37
+|    236  | 45.93
+|    235  | 32.34
+|    234  | 20.43
+|    233  | 12.37
+|    232  |  5.08
+|    231  |  3.63
+|    230  |  2.80
+|    229  |  2.05
+|    228  |  1.42
+|    227  |  0.88
+|    226  |  0.42
+|    225  |  0
+|  < 225  |  ~0
+|============================
+
+=== Contact Readings
+
+Readings from the contacts are available as 14 bit values, with each
+sensor sending at 128hz. The values are interspered throughout the
+packet. See the Packet Layout section for which sensors are covered by
+each bit range.
+
+=== Contact Quality
+
+Contact quality consists of 14 bits, and refers to the contact quality
+of the sensor as an amplitude of its calibration signal. The sensor
+context of the field changes based on the value of the packet counter
+in the first byte. For instance, a counter value of 1 means the packet
+is showing the quality for sensor FC5, while a counter value of 2
+means that the packet is showing the quality for sensor AF3, and
+so on.
+
+The following list shows the order that the sensors are listed in, in
+relation to the counter, starting with counter = 0.
+
+|============================
+| Counter Index | Contact	
+| 0 | F3
+| 1 | FC5
+| 2 | AF3
+| 3 | F7
+| 4 | T7
+| 5 | P7
+| 6 | O1
+| 7 | O2
+| 8 | P8
+| 9 | T8
+| 10 | F8
+| 11 | AF4
+| 12 | FC6
+| 13 | F4
+| 14 | F8
+| 15 | AF4
+| 16-63 | Unknown?
+| 64 | F3
+| 65 | FC5
+| 66 | AF3
+| 67 | F7
+| 68 | T7
+| 69 | P7
+| 70 | O1
+| 71 | O2
+| 72 | P8
+| 73 | T8
+| 74 | F8
+| 75 | AF4
+| 76 | FC6
+| 77 | F4
+| 78 | F8
+| 79 | AF4
+| 80 | FC6
+| .. | 77-80 Pattern repeats until counter hits 127
+|============================
+
+To get a useful reading, divide each readout by ~540. A value of
+0.8-1.0 means a "good" contact.
+
+=== Gyros
+
+Gyro readings are available for 2 axes (head turned left/right and
+foreward/back). These are 8-bit values that update at a rate of 128hz,
+with 7-bits of resolution on either side of the median point for the
+turn.

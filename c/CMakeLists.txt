@@ -1,0 +1,50 @@
+cmake_minimum_required (VERSION 2.6)
+PROJECT(emokit)
+
+SET(BUILD_SHARED_LIBS true)
+
+LIST(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake_modules)
+SET(EXECUTABLE_OUTPUT_PATH ${CMAKE_BINARY_DIR}/bin)
+SET(LIBRARY_OUTPUT_PATH ${CMAKE_BINARY_DIR}/lib)
+
+FIND_PACKAGE(Mcrypt REQUIRED)
+
+IF(WIN32)
+  SET(WDK_PATH CACHE PATH "Path to WDK Installation")
+  INCLUDE_DIRECTORIES(${WDK_PATH}/inc/api ${WDK_PATH}/inc/crt ${WDK_PATH}/inc)
+  LINK_DIRECTORIES(${WDK_PATH}/lib/wxp/i386)
+  LIST(APPEND LIBEPOC_REQUIRED_LIBS hid setupapi)
+ELSEIF(UNIX)
+  FIND_PACKAGE(libusb-1.0 REQUIRED)
+  IF(LIBUSB_1_FOUND)
+    INCLUDE_DIRECTORIES(${LIBUSB_1_INCLUDE_DIRS})
+    LIST(APPEND LIBEPOC_REQUIRED_LIBS ${LIBUSB_1_LIBRARIES})
+  ENDIF(LIBUSB_1_FOUND)
+ENDIF(WIN32)
+
+SET(LIBS ${Mcrypt_LIBS} ${LIBUSB_1_LIBRARIES})
+
+MESSAGE(STATUS ${LIBS})
+INCLUDE_DIRECTORIES(${Mcrypt_INCLUDE_DIR} ${libepoc_SOURCE_DIR}/include)
+LINK_DIRECTORIES(/usr/local/lib)
+
+ADD_SUBDIRECTORY(src)
+ADD_SUBDIRECTORY(examples/emokitd)
+# ADD_SUBDIRECTORY(examples/emokit_osc)
+
+##########################################
+##       PKGCONFIG file                ###
+##########################################
+
+IF   (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/emokit.pc.in")
+  MESSAGE(STATUS "configured ${CMAKE_CURRENT_SOURCE_DIR}/emokit.pc.in --> ${CMAKE_CURRENT_BINARY_DIR}/emokit.pc")
+  CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/emokit.pc.in 
+    ${CMAKE_CURRENT_BINARY_DIR}/emokit.pc
+    @ONLY )
+
+	INSTALL(FILES
+		${CMAKE_CURRENT_BINARY_DIR}/emokit.pc
+		DESTINATION lib/pkgconfig
+		)
+ENDIF(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/emokit.pc.in")
+
